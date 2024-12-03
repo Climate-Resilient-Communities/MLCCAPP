@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from langchain_community.tools.tavily_search import TavilySearchResults
 from typing import Dict, Any, Optional, List, Tuple
 import asyncio
+
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -23,27 +24,37 @@ from ragas.llms import LangchainLLMWrapper
 from ragas.dataset_schema import SingleTurnSample, EvaluationDataset 
 from langchain_cohere import ChatCohere, CohereEmbeddings
 
+import warnings
+warnings.filterwarnings("ignore", category=Warning)
+
+load_dotenv('.env')
+COHERE_API_KEY = os.getenv('COHERE_API_KEY')
+if COHERE_API_KEY:
+    cohere_client = cohere.ClientV2(api_key=COHERE_API_KEY)
+else:
+    raise EnvironmentError("COHERE_API_KEY not found in environment variables.")
+
 # Import all functions from our custom modules
 from aya_translation import (
     initialize_multilingual_pipeline,
-    MultilingualRouter,
-    LanguageSupport,
+    #MultilingualRouter,
+    #LanguageSupport,
     aya_translation
 )
 
 from input_guardrail import (
     topic_moderation,
     # prompt_guard, #removing until we get prompt guard working
-    construct_dataset
+    #construct_dataset
     # get_class_probabilities,
     # get_jailbreak_score,
     # get_indirect_injection_score
 )
 
 from retrieval import (
-    get_query_embeddings,
-    weight_by_alpha,
-    issue_hybrid_query,
+    #get_query_embeddings,
+    #weight_by_alpha,
+    #issue_hybrid_query,
     get_hybrid_results,
     #get_entire_content,
     process_search_results #added this function to process search results
@@ -52,15 +63,15 @@ from retrieval import (
 from rerank import rerank_fcn
 
 from gen_response_and_citations import (
-    doc_preprocessing,
+    #doc_preprocessing,
     cohere_chat
 )
 
 from hallucination_guard import (
     extract_contexts,
     check_hallucination,
-    FaithfulnesswithHHEM,
-    SingleTurnSample
+    #FaithfulnesswithHHEM,
+    #SingleTurnSample
 )
 
 # Configure logging
@@ -202,11 +213,18 @@ class MultilingualClimateChatbot:
         )
         
         # Initialize Prompt Guard
+        #self.promptguard_model = AutoModelForSequenceClassification.from_pretrained(
+        #    "meta-llama/Prompt-Guard-86M"
+        #)
+        #self.promptguard_tokenizer = AutoTokenizer.from_pretrained(
+        #    "meta-llama/Prompt-Guard-86M"
+        #)
+
         self.promptguard_model = AutoModelForSequenceClassification.from_pretrained(
-            "meta-llama/Prompt-Guard-86M"
+            "HuggingFaceOffline/promptguard"
         )
         self.promptguard_tokenizer = AutoTokenizer.from_pretrained(
-            "meta-llama/Prompt-Guard-86M"
+            "HuggingFaceOffline/promptguard"
         )
         
         # Set up pipelines
@@ -257,7 +275,6 @@ class MultilingualClimateChatbot:
         """Run input guardrails for topic moderation only."""
         try:
             logger.info("Running input guardrails")
-            
             # Perform topic check
             topic_check = topic_moderation.remote(
                 query,
@@ -293,6 +310,7 @@ class MultilingualClimateChatbot:
                     alpha=0.4,
                     top_k=10
                 )
+
                 logger.debug(f"Retrieved {len(hybrid_results.matches)} matches from hybrid search")
                 
                 # Debug first result structure
@@ -329,6 +347,7 @@ class MultilingualClimateChatbot:
                     docs_to_rerank=docs_with_content,
                     top_k=5
                 )
+                
                 logger.info(f"Successfully reranked {len(reranked_docs)} documents")
                 
                 # Debug reranked documents
@@ -381,6 +400,7 @@ class MultilingualClimateChatbot:
                 # 1. Language routing
                 logger.info("🌐 Processing language routing...")
                 language_code = self.get_language_code(language_name)
+                
                 route_result = self.router.route_query(
                     query=query,
                     language_code=language_code,
@@ -395,11 +415,13 @@ class MultilingualClimateChatbot:
                     }
                 
                 processed_query = route_result['processed_query']
+                english_query = route_result['english_query']
                 logger.info("🌐 Language routing complete")
                 
                 # 2. Input validation
                 logger.info("🔍 Validating input...")
-                guard_results = await self.process_input_guards(processed_query)
+                guard_results = await self.process_input_guards(english_query)
+
                 if not guard_results['passed']:
                     logger.warning("🔍 Query failed input validation")
                     return {
@@ -410,29 +432,8 @@ class MultilingualClimateChatbot:
                 
                 # 3. Document retrieval and reranking (all in one step)
                 try:
-                    # Get hybrid search results
-                    logger.info("📚 Starting vector search...")
-                    hybrid_results = get_hybrid_results(
-                        self.index,
-                        processed_query,
-                        self.embed_model,
-                        alpha=0.4,
-                        top_k=10
-                    )
-                    logger.info(f"📚 Retrieved {len(hybrid_results.matches)} results from vector search")
-                    
-                    # Process results
-                    logger.info("📚 Processing search results...")
-                    processed_docs = process_search_results(hybrid_results)
-                    logger.info(f"📚 Processed {len(processed_docs)} documents")
-                    
-                    # Rerank documents
-                    logger.info("📚 Starting document reranking...")
-                    reranked_docs = rerank_fcn(
-                        query=processed_query,
-                        docs_to_rerank=processed_docs,
-                        top_k=5
-                    )
+                    logger.info("📚 Starting retrieval and reranking...")
+                    reranked_docs = await self.get_documents(processed_query)
                     logger.info(f"📚 Reranked {len(reranked_docs)} documents")
                     
                 except Exception as e:
@@ -442,35 +443,7 @@ class MultilingualClimateChatbot:
                 # 4. Generate response - directly use reranked_docs
                 try:
                     logger.info("✍️ Starting response generation...")
-                    load_dotenv("/Users/luis_ticas/Documents/.env")
-                    COHERE_API_KEY = os.getenv('COHERE_API_KEY')
-                    co = cohere.ClientV2(COHERE_API_KEY)
-                    
-                    # Prepare documents in the correct format for Cohere
-                    logger.info("✍️ Preparing documents for response generation...")
-                    documents_for_cohere = [{
-                        'data': {
-                            'title': doc.get('title', ''),
-                            'snippet': doc.get('content', ''),
-                            'url': doc.get('url', [''])[0] if isinstance(doc.get('url', []), list) else doc.get('url', '')
-                        }
-                    } for doc in reranked_docs]
-                    
-                    # Generate response
-                    system_message = """You are an expert in climate change..."""  # Your existing system message
-                    
-                    logger.info("✍️ Generating response with Cohere...")
-                    res = co.chat(
-                        model="command-r-plus-08-2024",
-                        messages=[
-                            {"role": "system", "content": system_message},
-                            {"role": "user", "content": f"Question: {processed_query}. \n Answer:"}
-                        ],
-                        documents=documents_for_cohere
-                    )
-                    
-                    response = res.message.content[0].text
-                    citations = res.message.citations
+                    response, citations = cohere_chat(processed_query, reranked_docs)
                     logger.info("✍️ Response generation complete")
                     
                 except Exception as e:
@@ -483,12 +456,19 @@ class MultilingualClimateChatbot:
                     # Extract contexts with limits
                     logger.info("✔️ Extracting contexts for verification...")
                     contexts = extract_contexts(citations, reranked_docs, max_contexts=3)
-                    
+
                     # Check for hallucinations
                     logger.info("✔️ Performing hallucination check...")
+
+                    # Translate the response to English if it is not already; then check for hallucination.
+                    if route_result['routing_info']['support_level']=='command_r_plus' and language_code!='en':
+                        processed_response = self.router.translate_with_command_r(response, language_name)
+                    else:
+                        processed_response = response
+
                     faithfulness_score = await check_hallucination(
-                        question=processed_query,
-                        answer=response,
+                        question=english_query,
+                        answer=processed_response,
                         contexts=contexts,
                         cohere_api_key=self.COHERE_API_KEY
                     )
@@ -499,23 +479,22 @@ class MultilingualClimateChatbot:
                         
                         # First try: Regenerate with stricter prompt
                         logger.info("✔️ Attempting regeneration with stricter prompt...")
-                        res = co.chat(
-                            model="command-r-plus-08-2024",
-                            messages=[
-                                {"role": "system", "content": system_message},
-                                {"role": "user", "content": f"Question: {processed_query} [Please ensure strict factual accuracy]. \n Answer:"}
-                            ],
-                            documents=documents_for_cohere
-                        )
-                        regenerated_response = res.message.content[0].text
-                        regenerated_citations = res.message.citations
-                        
+                        description = 'Please ensure strict factual accuracy'
+                        regenerated_response, regenerated_citations = cohere_chat(processed_query, reranked_docs, description)
+
                         # Check regenerated response
                         logger.info("✔️ Checking regenerated response...")
                         new_contexts = extract_contexts(regenerated_citations, reranked_docs, max_contexts=3)
+
+                        # Translate the response to English if it is not already; then check for hallucination.
+                        if route_result['routing_info']['support_level']=='command_r_plus' and language_code!='en':
+                            processed_response = self.router.translate_with_command_r(regenerated_response, language_name)
+                        else:
+                            processed_response = regenerated_response
+
                         regenerated_score = await check_hallucination(
-                            question=processed_query,
-                            answer=regenerated_response,
+                            question=english_query,
+                            answer=processed_response,
                             contexts=new_contexts,
                             cohere_api_key=self.COHERE_API_KEY
                         )
@@ -526,7 +505,8 @@ class MultilingualClimateChatbot:
                             logger.info("✔️ Attempting Tavily fallback...")
                             fallback_response, fallback_citations, fallback_score = await self._try_tavily_fallback(
                                 query=processed_query,
-                                original_contexts=contexts
+                                english_query = english_query,
+                                language_name=language_name
                             )
                             
                             # Use fallback results if they're better
@@ -599,13 +579,14 @@ class MultilingualClimateChatbot:
                     "message": f"Error processing query: {str(e)}"
                 }
             
-    async def _try_tavily_fallback(self, query: str, original_contexts: List[str]) -> Tuple[Optional[str], Optional[List], float]:
+    async def _try_tavily_fallback(self, query: str, english_query: str, language_name: str) -> Tuple[Optional[str], Optional[List], float]:
         """
         Attempt to get a response using Tavily search when primary response fails verification.
         
         Args:
             query: The original query
-            original_contexts: Original context used in failed response
+            english_query: Translated query
+            language_name: Original language
             
         Returns:
             Tuple of (response text, citations, faithfulness score)
@@ -613,7 +594,7 @@ class MultilingualClimateChatbot:
         try:
             logger.info("Attempting Tavily fallback search")
             tavily_search = TavilySearchResults()
-            
+
             # Perform web search
             search_results = await tavily_search.ainvoke(query)
             
@@ -625,41 +606,36 @@ class MultilingualClimateChatbot:
             documents_for_cohere = []
             for result in search_results:
                 document = {
-                    'data': {
-                        'title': f"{result.get('title', '')}: {result.get('url', '')}",
-                        'snippet': result.get('content', '')
+                        'title': result.get('url', ''),
+                        'url': result.get('url', ''),
+                        'content': result.get('content', '')
                     }
-                }
                 documents_for_cohere.append(document)
             
             # Generate new response with Tavily results
-            system_message = """You are a climate change expert. Please provide accurate information 
-            based on the search results, ensuring high factual accuracy. Always cite your sources."""
-            
-            res = self.cohere_client.chat(
-                model="command-r-plus-08-2024",
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": f"Question: {query} [Ensure strict factual accuracy]. \n Answer:"}
-                ],
-                documents=documents_for_cohere
-            )
-            
-            fallback_response = res.message.content[0].text
-            fallback_citations = res.message.citations
+            description = """Please provide accurate information based on the search results. Always cite your sources. Ensure strict factual accuracy"""
+            fallback_response, fallback_citations = cohere_chat(query, documents_for_cohere, description)
             
             # Verify fallback response
             web_contexts = [f"{result.get('title', '')}: {result.get('content', '')}" 
                         for result in search_results]
             
+            # Translate the fallback response and web context to English if they are not already; then check for hallucination.
+            if query != english_query:
+                processed_response = self.router.translate_with_command_r(fallback_response, language_name)
+                processed_context = self.router.translate_with_command_r(web_contexts, language_name)
+            else:
+                processed_response = fallback_response
+                processed_context = web_contexts
+
             # Combine original and web contexts for better verification
-            combined_contexts = original_contexts + web_contexts
+            #combined_contexts = original_contexts + web_contexts
             
             # Check faithfulness of fallback response
             fallback_score = await check_hallucination(
-                question=query,
-                answer=fallback_response,
-                contexts=combined_contexts[:5],  # Limit contexts to prevent overload
+                question=english_query,
+                answer=processed_response,
+                contexts=processed_context,  # Limit contexts to prevent overload
                 cohere_api_key=self.COHERE_API_KEY
             )
             
@@ -757,7 +733,7 @@ async def main():
         # Print languages in columns
         col_width = 20
         num_cols = 4
-        for i in range(0, len(languages), num_cols):
+        for i in range(0, len(languages), num_cols):  
             row = languages[i:i + num_cols]
             print("".join(lang.ljust(col_width) for lang in row))
             

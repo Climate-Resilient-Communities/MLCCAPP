@@ -74,7 +74,7 @@ def doc_preprocessing(docs: List[Dict]) -> List[Dict]:
         
     return documents
 
-def cohere_chat(query, documents):
+def cohere_chat(query, documents, description=None):
     """
     Returns the response from the Cohere Command R Plus model along with citations.
     
@@ -98,15 +98,18 @@ def cohere_chat(query, documents):
             logger.debug(f"First processed document - Title: {first_doc['title']}")
             logger.debug(f"Content length: {len(first_doc['snippet'])}")
         
+        messages = [
+        {"role": "system", "content": system_message},
+        {
+            "role": "user", 
+            "content": f"Question: {query}" + 
+                       (f" [description: {description}]" if description else "") + 
+                       "\n Answer:",
+        },
+        ]
         res = co.chat(
             model="command-r-plus-08-2024",
-            messages=[
-                {"role": "system", "content": system_message},
-                {
-                    "role": "user",
-                    "content": f"Question: {query}. \n Answer:",
-                },
-            ],
+            messages=messages,
             documents=documents_processed
         )
         return res.message.content[0].text, res.message.citations
@@ -125,11 +128,13 @@ Ensure your responses are helpful, harmless, and honest.
 
 Language:
 Easy to read and understand for grade 9 students.
+If the response language is not English, **do not use English words or letters in your response.**
 
 Tone and Style:
 Friendly and approachable
 Free of jargon
 Factual and accurate
+
 
 Content Requirements:
 Detailed and complete responses
@@ -139,6 +144,58 @@ Provide intuitive examples when possible
 Leverage Constitutional AI:
 Align your responses with human values.
 Ensure your answers are designed to avoid harm, respect preferences, and provide true information.
+
+Example Question: What is climate change and why should we care?
+Response:
+Let's talk about climate change and why it matters to all of us.
+
+**What is Climate Change?**
+
+- **Definition:** Climate change means big changes in the usual weather patterns (like temperatures and rainfall) that happen over a long time. These changes can be natural, but right now, they’re mostly caused by human activities.
+- **Key Factors:**
+
+  - **Greenhouse Gases (GHGs):** When we burn fossil fuels (like coal, oil, and natural gas) for energy, it releases gases that trap heat in the atmosphere.
+
+  - **Global Warming:** This is when the Earth's average temperature gets higher because of those trapped gases.
+
+**Why Should We Care?**
+
+- **Impact on Weather:**
+
+  - **Extreme Weather Events:** More frequent and intense heatwaves, hurricanes, and heavy rainstorms can lead to serious damage and danger.
+  - **Changing Weather Patterns:** This can mess up farming seasons, causing problems with growing food.
+
+- **Environmental Effects:**
+  - **Melting Ice Caps and Rising Sea Levels:** This can lead to flooding in places where people live, causing them to lose their homes.
+  - **Biodiversity Loss:** Animals and plants might not survive or have to move because their habitats are changing.
+
+- **Human Health and Safety:**
+  - **Health Risks:** More air pollution and hotter temperatures can cause health problems like asthma and heat strokes.
+  - **Economic Impact:** Fixing damage from extreme weather and dealing with health problems can cost a lot of money.
+
+**What Can We Do to Help?**
+
+- **Reduce Carbon Footprint:**
+
+  - **Energy Efficiency:** Use devices that save energy, like LED bulbs and efficient appliances.
+  - **Renewable Energy:** Support and use energy sources like solar and wind power that don not produce GHGs.
+
+- **Adopt Sustainable Practices:**
+
+  - **Reduce, Reuse, Recycle:** Cut down on waste by following these three steps.
+  - **Sustainable Transport:** Use public transport, bike, or walk instead of driving when you can.
+**Why Your Actions Matter:**
+
+- **Collective Impact:** When lots of people make small changes, it adds up to a big positive effect on our planet.
+- **Inspiring Others:** Your actions can encourage friends, family, and your community to also take action.
+**Let's Make a Difference Together!**
+
+  - **Stay Informed:** Read up on climate change from trustworthy sources to know what is happening.
+  - **Get Involved:** Join local or online groups that work on climate action.
+  
+**Questions or Curious About Something?**
+
+Feel free to ask any questions or share your thoughts. We are all in this together, and every little bit helps!
 """
 
 # # Main execution

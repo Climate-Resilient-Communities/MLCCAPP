@@ -1,16 +1,27 @@
 from huggingface_hub import login
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
+import cohere
 from typing import Optional, List, Dict, Any
 from enum import Enum
 import logging
 import os
+from dotenv import load_dotenv
 
 # Set environment variable to disable tokenizers parallelism
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Authenticate with Hugging Face API
-login(token='enter your HF token here')
+load_dotenv('.env')
+COHERE_API_KEY = os.getenv('COHERE_API_KEY')
+HF_API_TOKEN = os.getenv("HF_API_TOKEN")
+login(token=HF_API_TOKEN)
+
+# Check if the API key is loaded properly
+if COHERE_API_KEY:
+    cohere_client = cohere.ClientV2(api_key=COHERE_API_KEY)
+else:
+    raise EnvironmentError("COHERE_API_KEY not found in environment variables.")
 
 class LanguageSupport(Enum):
     COMMAND_R_PLUS = "command_r_plus"
@@ -51,10 +62,12 @@ def generate_aya_23(
     )
     input_ids = input_ids.to(model.device)
     prompt_padded_len = len(input_ids[0])
+    attention_mask = (input_ids != tokenizer.pad_token_id).long()
 
     try:
         gen_tokens = model.generate(
             input_ids,
+            attention_mask=attention_mask,
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
@@ -62,6 +75,8 @@ def generate_aya_23(
             do_sample=True,
         )
         gen_tokens = [gt[prompt_padded_len:] for gt in gen_tokens]
+        #Maryam
+        tokenizer.clean_up_tokenization_spaces = True
         return tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
     except Exception as e:
         logging.error(f"Error during text generation: {e}")
@@ -83,7 +98,7 @@ def aya_translation(
 
 class MultilingualRouter:
     COMMAND_R_PLUS_SUPPORTED_LANGUAGES = {
-        'en', 'fr', 'es', 'it', 'de', 'pt-BR', 'ja', 'ko', 'zh-CN', 'ar',
+        'en', 'fr', 'es', 'it', 'de', 'pt', 'ja', 'ko', 'zh', 'ar',
         'ru', 'pl', 'tr', 'vi', 'nl', 'cs', 'id', 'uk', 'ro', 'el', 'hi', 'he', 'fa'
     }
     
@@ -150,6 +165,19 @@ class MultilingualRouter:
             self.logger.error(f"Translation failed for language '{language_code}': {e}")
             raise
 
+    def translate_with_command_r(self, query: str, language_name: str) -> str:
+        """Translate text to English using Cohere's Command R+ model"""
+        english_translation = cohere_client.chat(
+            model="command-r-plus-08-2024",
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Translate ONLY the following text from {language_name} to English. Do NOT explain or modify the text. Provide a direct translation: {query}"
+                }
+            ]
+        )
+        return english_translation.message.content[0].text
+
     def route_query(self, query: str, language_code: str, language_name: str) -> Dict[str, Any]:
         """Route the query based on standardized language code and language support level."""
         standardized_code = self.standardize_language_code(language_code)
@@ -157,6 +185,7 @@ class MultilingualRouter:
         
         routing_result = {
             'processed_query': query,
+            'english_query': query,
             'original_language': standardized_code,
             'should_proceed': support_level != LanguageSupport.UNSUPPORTED,
             'routing_info': {
@@ -170,10 +199,23 @@ class MultilingualRouter:
             routing_result['routing_info']['message'] = self._get_unsupported_language_message(language_name, standardized_code)
             return routing_result
 
-        if support_level == LanguageSupport.AYA:
+        elif support_level == LanguageSupport.COMMAND_R_PLUS and standardized_code!='en':
+            translated_query = self.translate_with_command_r(query, language_name)
+            routing_result.update({
+                'processed_query': query,
+                'english_query': translated_query,
+                'routing_info': {
+                    'support_level': support_level.value,
+                    'needs_translation': False,
+                    'message': "Translated with Command-r-plus for further processing"
+                }
+            })
+
+        elif support_level == LanguageSupport.AYA:
             translated_query = self.translate_with_aya(query, standardized_code)
             routing_result.update({
                 'processed_query': translated_query,
+                'english_query': translated_query,
                 'routing_info': {
                     'support_level': support_level.value,
                     'needs_translation': True,
@@ -183,15 +225,24 @@ class MultilingualRouter:
 
         return routing_result
 
-def initialize_multilingual_pipeline(model_name: str = "CohereForAI/aya-23-8b") -> MultilingualRouter:
+#def initialize_multilingual_pipeline(model_name: str = "CohereForAI/aya-23-8b") -> MultilingualRouter:
+#    """Initialize the multilingual pipeline with required models."""
+    #try:
+    #    aya_model = AutoModelForCausalLM.from_pretrained(
+    #        model_name,
+    #        torch_dtype=torch.bfloat16,
+    #        device_map="auto",
+    #    )
+    #    aya_tokenizer = AutoTokenizer.from_pretrained(model_name)
+def initialize_multilingual_pipeline() -> MultilingualRouter:
     """Initialize the multilingual pipeline with required models."""
     try:
         aya_model = AutoModelForCausalLM.from_pretrained(
-            model_name,
+            'HuggingFaceOffline/aya-23-8b',
             torch_dtype=torch.bfloat16,
             device_map="auto",
         )
-        aya_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        aya_tokenizer = AutoTokenizer.from_pretrained('HuggingFaceOffline/aya-23-8b')
         return MultilingualRouter(aya_model, aya_tokenizer)
     except Exception as e:
         logging.error(f"Failed to initialize multilingual pipeline: {str(e)}")
