@@ -1,0 +1,18 @@
+# Ignore Python virtual environments
+venv/
+
+# Ignore Hugging Face cache or offline data
+HuggingFaceOffline/
+Data/
+
+# Ignore environment files
+.env
+
+# Ignore compiled Python files
+__pycache__/
+*.pyc
+*.pyo
+utils/__pycache__/
+
+# Ignore macOS system files
+.DS_Store
