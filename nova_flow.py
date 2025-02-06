@@ -4,7 +4,7 @@ import os
 from utils.env_loader import load_environment
 
 class BedrockModel:
-    def __init__(self, model_id, region_name='us-east-1'):
+    def __init__(self, model_id='amazon.nova-micro-v1:0', region_name='us-east-1'):
         """
         Initializes the Bedrock Model client.
         Args:

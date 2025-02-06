@@ -84,7 +84,7 @@ def get_hybrid_results(index, query: str, embed_model, alpha: float, top_k: int)
 async def get_documents(query: str, index, embed_model, cohere_client) -> List[Dict]:
     """Retrieve and rerank relevant documents."""
     try:           
-        logger.info("Starting document retrieval")
+        #logger.info("Starting document retrieval")
     
         # Get hybrid search results
         try:
@@ -130,11 +130,11 @@ async def get_documents(query: str, index, embed_model, cohere_client) -> List[D
             reranked_docs = rerank_fcn(
                 query=query,
                 docs_to_rerank=docs_with_content,
-                top_k=5,
+                top_k=10, #5,
                 cohere_client = cohere_client
             )
-                
-            logger.info(f"Successfully reranked {len(reranked_docs)} documents")
+                  
+            #logger.info(f"Successfully reranked {len(reranked_docs)} documents")
                 
             # Debug reranked documents
             if reranked_docs:
@@ -240,7 +240,7 @@ def process_search_results(search_results) -> List[Dict]:
             logger.warning(f"Error processing match: {str(e)}")
             continue
     
-    logger.info(f"Successfully processed {len(processed_docs)} documents")
+    #logger.info(f"Successfully processed {len(processed_docs)} documents")
     return processed_docs
 
 def format_document_output(doc: Dict) -> str:

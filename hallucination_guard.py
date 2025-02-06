@@ -1,59 +1,42 @@
 import os
 import sys
 import asyncio
-from utils.env_loader import load_environment
+import logging
+import time
+from typing import List
 from ragas.dataset_schema import SingleTurnSample
 from ragas.metrics import FaithfulnesswithHHEM
-from langchain_cohere import ChatCohere
 from ragas.llms import LangchainLLMWrapper
-import logging
-import warnings
-from transformers import logging as transformers_logging
+from langchain_cohere import ChatCohere
+from utils.env_loader import load_environment
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+
+# Configure logging with a cleaner format
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Suppress specific warnings
-warnings.filterwarnings("ignore", category=FutureWarning, module='transformers.tokenization_utils_base')
-transformers_logging.set_verbosity_error()  # This will suppress model loading warnings
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message="You are using a model of type HHEMv2Config")
 
 def truncate_text(text: str, max_length: int = 450) -> str:
     """Truncate text to a maximum number of words while preserving meaning."""
     words = text.split()
-    if len(words) <= max_length:
-        return text
-    return ' '.join(words[:max_length]) + '...'
+    return ' '.join(words[:max_length]) + '...' if len(words) > max_length else text
 
-def extract_contexts(citations, docs_reranked, max_contexts: int = 3):
-    """
-    Extract and truncate context from citations or documents.
-    
-    Args:
-        citations: List of citation objects from Cohere
-        docs_reranked: List of reranked documents
-        max_contexts: Maximum number of contexts to include
-        
-    Returns:
-        list: List of truncated context strings
-    """
-    contexts = []
+def extract_contexts(docs_reranked: List[dict], max_contexts: int = 3) -> List[str]:
+    """Extract and truncate context from documents."""
     try:
-        if citations is not None:
-            for citation in citations[:max_contexts]:
-                sources = citation.sources
-                for source in sources:
-                    document = source.document
-                    context = f"{document.get('title', '')}: {document.get('snippet', '')}"
-                    contexts.append(truncate_text(context))
-        else:
-            for document in docs_reranked[:max_contexts]:
-                context = f"{document.get('title', '')}: {document.get('content', '')}"
-                contexts.append(truncate_text(context))
-        
+        contexts = [
+            truncate_text(doc.get('content', ''))
+            for doc in docs_reranked[:max_contexts]
+        ]
         logger.debug(f"Extracted {len(contexts)} contexts")
         return contexts
-        
     except Exception as e:
         logger.error(f"Error extracting contexts: {str(e)}")
         raise
@@ -81,7 +64,7 @@ async def check_hallucination(question: str, answer: str, contexts: list, cohere
         # Initialize LLM wrapper
         evaluator_llm = LangchainLLMWrapper(
             ChatCohere(
-                model="command-r-08-2024",
+                model="command-r-plus",
                 cohere_api_key=cohere_api_key
             )
         )
@@ -91,11 +74,9 @@ async def check_hallucination(question: str, answer: str, contexts: list, cohere
         
         # Truncate question and answer if they're too long
         truncated_question = truncate_text(question, max_length=100)
-        truncated_answer = truncate_text(answer, max_length=300)
+        truncated_answer = truncate_text(answer, max_length=200)
+        truncated_contexts = [truncate_text(ctx, max_length=200) for ctx in contexts[:1]]
         
-        # Take only the most relevant contexts, truncated
-        truncated_contexts = [truncate_text(ctx, max_length=200) for ctx in contexts[:3]]
-    
         # Create evaluation sample
         input_sample = SingleTurnSample(
             user_input=truncated_question,
@@ -114,95 +95,94 @@ async def check_hallucination(question: str, answer: str, contexts: list, cohere
         return 0.0
 
 async def test_hallucination_guard():
-    """Test function for hallucination checking with longer texts."""
-    # Test data with longer texts
-    test_cases = [
-        {
-            "question": "how does climate change affect human life?",  # Make it longer
-            "answer": """
-                        Climate change is a big deal for all of us, and it's affecting our lives in lots of ways. Here's a look at some of the impacts:
-                        - **Health:**
-                            - **Physical Health:** Climate change can cause all sorts of health problems. For example, extreme weather like heatwaves, floods, and storms can make people sick or even hurt them. It can also mess with the air we breathe and the water we drink, which isn't good for our bodies.
-                            - **Mental Health:** Some people might feel worried or anxious about climate change. This is called "eco-anxiety," and it's a real thing.
-                        - **Environment:**
-                            - **Nature:** Our natural world is changing because of climate change. This can mean losing plants and animals, and even whole ecosystems.
-                            - **Extreme Events:** Wildfires, droughts, and big storms can damage our homes and the places we live.
-                        - **Daily Life:**
-                            - **Food and Water:** Climate change can make it harder to grow food and find clean water.
-                            - **Work and Money:** Some jobs and businesses might be affected, especially if they depend on nature or the weather.
+    question = "waht is climate change?"
+    context = [ """Climate change - A persistent, long-term change in the state of the climate, measured by changes in the mean state and/or its variability. Climate change may be due to natural internal processes, natural external forcings such as volcanic eruptions and modulations of the solar cycle, or to persistent anthropogenic changes in the composition of the atmosphere or in land use (IPCC, 2014).""",
+                """Climate change: Climate change refers to a change in the state of the climate that can be identified (e.g. by using statistical tests) by changes in the mean and/or the variability of its properties, and that persists for an extended period, typically decades or longer. Climate change may be due to natural internal processes or external forcing factors, or to persistent anthropogenic changes in the composition of the atmosphere or in land use. Note that the United Nations Framework Convention on Climate Change (UNFCCC) defines climate change as "a change of climate which is attributed directly or indirectly to human activity that alters the composition of the global atmosphere and which is in addition to natural climate variability observed over comparable time periods. " The UNFCCC thus makes a distinction between climate change attributable to human activities altering the atmospheric composition, and climate variability attributable to natural causes. (From Impacts to Adaptation : Canada in a Changing Climate, 2007, http://adaptation.nrcan.gc.ca/assess/2007/ch11/index_e.php#R) Greenhouse effect: Greenhouse gases effectively absorb infrared radiation, emitted by the Earth's surface, by the atmosphere itself due to the same gases and by clouds. Atmospheric radiation is emitted to all sides, including downward to the Earth's surface. Thus, greenhouse gases trap heat within the surface-troposphere system. This is called the greenhouse effect. http://www.ipcc.ch/publications_and_data/ar4/wg3/en/annex1sglossary-e-i.html Greenhouse gas (GHG ): Gaseous constituents of the atmosphere, both natural and anthropogenic, that absorb and emit radiation at specific wavelengths within the spectrum of infrared radiation emitted by the Earth 's surface, by the atmosphere itself and by clouds. Water vapour (H2O), carbon dioxide (CO2), nitrous oxide (N2O), methane (CH4) and ozone (O3) are the primary greenhouse gases in the Earth's atmosphere. In addition, there are a number of entirely human-made greenhouse gases in the atmosphere, such as the halocarbons and other chlorine- and bromine-containing substances. (From Impacts to Adaptation : Canada in a Changing Climate, 2007, http://adaptation.nrcan.gc.ca/assess/2007/ch11/index_e.php#R) Mitigation: Initiatives and measures to reduce the vulnerability of natural and human systems against actual or expected climate change effects. (IPCC, 2008) Natural Systems: Includes the natural environment (forests, wetlands, wildlife, etc.) plus human activities to monitor, protect and enhance the natural environment and educate the public on the current and future state of our natural systems. http://www.peelregion.ca/planning/climatechange/reports/pdf/climate-chan-strat-bgr.pdf Public Health : Involves the combination of programs, services and policies that protect and promote the health of all. Public health is involved in the enhancement of the health status of the population; reduction of disparities in health status among individual/groups within that population; preparation for and response to outbreaks and emergencies; and enhancing the sustainability of the healthcare system. http://www.peelregion.ca/planning/climatechange/reports/pdf/climate-chan-strat-bgr.pdf Urban forest: The trees, forests and associated organisms that grow near buildings and in gardens, green spaces, parks and golf courses located in village, town, suburban and urban areas. http://canadaforests.nrcan.gc.ca/glossary/u""",
+                """Climate Change: Climate change refers to a statistically significant variation in either the mean state of the climate or in its variability, persisting for an extended period (typically decades or longer). Climate change may be due to natural internal processes or external forcings, or to persistent anthropogenic changes in the composition of the atmosphere or in land use. The United Nations Framework Convention on Climate Change (UNFCCC), however, does make a distinction between "climate variability" attributable to natural causes and "climate change" attributable to human activities altering the atmospheric composition. In the UNFCCC's Article 1, "climate change" is defined as: "a change of climate which is attributed directly or indirectly to human activity that alters the composition of the global atmosphere and which is in addition to natural climate variability observed over comparable time periods." (IPCC, 2001) Climate Feedback: The influence of a climate-related process on another that in turn influences the original process. For example, a positive climate feedback is an increase in temperature leading to a decrease in ice cover, which in turn leads to a decrease of reflected radiation (resulting in an increase in temperature). An example of a negative climate feedback is an increase in the Earth's surface temperature, which may locally increase cloud cover, which may reduce the temperature of the surface. (IPCC, 2001) Climatic Hazards: include increasing frequency of extreme weather events (floods, hurricanes, tornados, droughts), increasing summer temperatures, lower level of precipitation during main growing seasons, changes in streamflow, changes in snowfall Climate System: The system consisting of the atmosphere (gases), hydrosphere (water), lithosphere (solid rocky part of the Earth), and biosphere (living) that determine the Earth's climate. (NOAA, 2005) Climate Variability: Climate variability refers to variations in the mean state and other statistics (such as standard deviations, the occurrence of extremes, etc.) of the climate on all temporal and spatial scales beyond that of individual weather events. Variability may be due to natural internal processes within the climate system (internal variability), or to variations in natural or anthropogenic external forces (external variability). (IPCC, 2001) Climate: Climate in a narrow sense is usually defined as the 'average weather', or more rigorously, as the statistical description in terms of the mean and variability of relevant quantities over a period of time ranging from months to thousands or millions of years. Climate in a wider sense is the state, including a statistical description, of the climate system. The classical period of time is 30 years, as defined by the World Meteorological Organization (WMO). (IPCC, 2001) Climatic Variable: Qualitative classification of a weather element (e.g. temperature, precipitation, wind, humidity, etc.) at a place over a period of time. (NOAA, 2005) Coping Capacity: The means by which people or organizations use available resources and abilities to face adverse consequences that could lead to disaster. In general, this involves managing resources, both in normal times as well as during crises or adverse conditions. The strengthening of coping capacities usually builds resilience to withstand the effects of natural and human-induced hazards (UN/ISDR 2004). Capacity refers to the manner in which people and organizations use existing resources to achieve various beneficial ends during unusual, abnormal, and adverse conditions of a disaster event or process. The strengthening of coping capacities usually builds resilience to withstand the effects of natural and other hazards. (European Spatial Planning Observation Network) Critical Threshold: The point at which an activity faces an unacceptable level of harm, such as a change from profit to loss on a farm due to decreased water availability, or coastal flooding exceeding present planning limits. It occurs when a threshold q.v. is reached at which ecological or socioeconomic change is damaging and requires a policy response. (UNDP, 2005) Development Pathway: An evolution based on an array of technological, economic, social, institutional, cultural and biophysical characteristics that determine the interactions between human and natural systems, including production and consumption patterns in all countries, over time at a particular scale. (IPCC, 2007) Extreme Event: An extreme weather event refers to meteorological conditions that are rare for a particular place and/or time, such as an intense storm or heat wave. An extreme climate event is an unusual average over time of a number of weather events, for example heavy rainfall over a season.""",
+                """ "Climate" means the prevailing weather conditions in a specific place over a long period of time. "Climate change" refers to the long-term shift in weather patterns such as temperature and precipitation. Increasing temperatures and other extreme weather events are being observed in Canada and around the world. In 2023, the hottest year on record globally, the Intergovernmental Panel on Climate Change (IPPC) declared that human activities are unequivocally causing climate change as a result of greenhouse gas emissions. Toronto is experiencing weather that is hotter, wetter, and wilder, and these conditions are expected to worsen. The number of days per year with temperatures above 30°C has already increased from an average of 8 days in the 1950s to about 18 days per year currently. Data suggests that if global emissions remain on their current path this could increase to 29 days by the 2030s (2021-2050), and 54 days by the 2060s (20512080) 1 . As well, data suggests that by 2080 Toronto will experience an increase in annual precipitation of 19%, and extreme rainstorms with 30% more rainfall than the historical baseline (1971-2000), which are expected to lead to flooding and associated infrastructure damage, injuries, habitat degradation, degraded water quality, soil erosion and disruptions to services and the economy.""",
+            ]
+    response1 = """Climate change refers to long-term shifts in temperatures and weather patterns. Here’s a simple breakdown to help you understand:
+What is Weather vs. Climate?
+Weather: This refers to short-term atmospheric conditions in a specific place at a specific time. For example, it’s raining today in Toronto.
+Climate: This is the average weather conditions in a place over a long period, typically 30 years or more. It includes the average temperature, rainfall, and other weather patterns over decades.
+What is Climate Change?
+Climate change is a significant change in the state of the climate that can be identified by changes in the mean state and/or its variability. This can be due to:
 
-                        Remember, these are just a few examples. Climate change is a huge topic, and it touches almost every part of our lives. It's important to learn more and take action to protect our planet and ourselves!
-                        """,
-            "context": ["""
-                        Integrating Social and Behavior Change in Climate Change Adaptation- An Introductory Guide: https://www.climatelinks.org/sites/default/files/asset/document/2019_USAID_ATLAS_SBC%20Guide.pdf: 
-                        Climate variability and change will affect the health and livelihoods of most populations in the coming years, putting the lives and well-being of millions of people at increased risk. 
-                        Rising temperatures threaten many crop species, livestock health, and agricultural systems. 
-                        Rainfed agriculture is particularly vulnerable to rising temperatures, a potential increase in extreme weather events, and changes in precipitation patterns. 
-                        Sea level rise, more intense storm surge, and ocean warming and acidification all have potentially devastating impacts on human life and natural, social, and physical assets in coastal areas. 
-                        Public health is directly impacted by threats such as heat waves, and indirectly impacted by changes in the distribution and transmission of diseases and heightened food insecurity. 
-                        The poorest countries and communities are often the most vulnerable to these impacts because they lack the ability to prepare for and recover from both long-term changes, such as rising temperatures and sea level, and short-term shocks, such as more intense storms and floods. 
-                        Significant adverse social, economic, and environmental impacts of climate change will arise as climate risks challenge traditional livelihoods, exacerbate conflicts, and intensify humanitarian crises. 
-                        Most climate change adaptation and risk reduction measures require that humans modify existing behaviors or adopt new ones related to health, agriculture, natural resource management, infrastructure, and settlement patterns. 
-                        SBC, which incorporates knowledge from across disciplines to change 1""",
-                        """
-                        National Adaptation Strategy for Canada - Canada.ca: https://www.canada.ca/en/services/environment/weather/climatechange/climate-plan/national-adaptation-strategy/full-strategy.html: 
-                        Our natural environment is affected by climate change in both dramatic and subtle ways. 
-                        A thriving natural environment is foundational for all forms of life, including people, our society and well-being. 
-                        Widespread wildfires, frequent drought conditions, severe storms and permafrost thaw have a range of impacts on the environment, including loss of, and shifts in species, habitat and ecosystems. 
-                        These have lasting impacts on the natural environment and add to the existing effects of pollution and habitat destruction. As humans, we exist as part of the natural environment, not in separation from it. 
-                        Our relationship with the land is threatened with the degradation and loss of ecosystems that we rely on for our basic needs, like productive soil for food, access to clean air and water, or protection from floods. 
-                        The environment also supports our recreational, health, and spiritual needs. Many of our cultural identities are closely tied to our connection with the natural environment, where the intrinsic value of nature shapes our sense of self and connection to the land. 
-                        Extreme events, such as floods or wildfires, as well as slow-onset changes, such as thawing permafrost, extreme heat, or rising sealevels, can damage and destroy our infrastructure. 
-                        Across Canada, we have seen the recent impacts that climate change can have on our homes and the infrastructure that we rely on everyday for essential services. 
-                        Lost and damaged infrastructure endangers people's health and safety, while disrupting businesses, market access, and food, energy and trade supply chains. 
-                        The damage caused by climate change creates major repair and rebuilding costs, which deepens existing inequities and impacts the well-being of our communities. 
-                        At a Insured damages from Hurricane Fiona in 2022 are now estimated to be over $800 million. 
-                        Local communities and businesses were severely impacted by storm, with critical infrastructure, including fishing wharves and small harbours damaged or destroyed. minimum, the impacts of climate change on infrastructure are making it harder for us to get around, work, or access food and water. 
-                        At worst, we will experience loss of life, our homes or entire communities. 
-                        Across Canada, climate change is affecting our livelihoods, impacting the work we do to earn an income as well as activities that are essential to everyday life, like growing, hunting, or gathering traditional foods. 
-                        Disruptions to livelihoods affect our ability to secure the necessities of life and provide for ourselves and our families. 
-                        Forestry, fisheries, agriculture, mining, energy, transportation, and tourism are some of the sectors facing greater climate change risks. 
-                        Our supply chains are vulnerable to climate-related impacts, especially when close trading partners are affected. 
-                        Impacts to economic and financial systems affect investments, insurance costs, incomes, and job..."""],
-            "expected_score_range": (0.7, 1.0)
-        },
-        {
-            "question": "What are the effects of climate change?",
-            "answer": "Climate change causes aliens to visit Earth more frequently." * 10,
-            "context": ["Climate change impacts: " + ("Rising sea levels, global temperature increase, and extreme weather events." * 20)],
-            "expected_score_range": (0.0, 0.3)
-        }
-    ]
-    
+Natural causes: Things like volcanic eruptions or natural cycles in the Earth's orbit around the sun.
+Human activities: Mainly burning fossil fuels (like coal, oil, and gas) for energy, deforestation, and other activities that increase the levels of greenhouse gases in the atmosphere.
+Key Points About Climate Change:
+Greenhouse Gases: These are gases like carbon dioxide (CO2), methane (CH4), and nitrous oxide (N2O) that trap heat in the Earth's atmosphere, leading to warming. Human activities have increased the levels of these gases.
+Global Warming: This is a specific aspect of climate change, referring to the overall increase in Earth’s average surface temperature due to human activities.
+Impacts: Climate change can lead to more frequent and severe weather events, like heatwaves, floods, and droughts. It can also affect ecosystems, agriculture, and human health.
+Why Should We Care?
+Climate change poses risks to:
+
+Health: Extreme weather can lead to injuries, illnesses, and even deaths.
+Economy: Damage to infrastructure, agriculture, and fisheries can have significant economic impacts.
+Environment: It can lead to loss of biodiversity, as plants and animals struggle to adapt to changing conditions.
+What Can We Do?
+Everyone can take action to help combat climate change:
+
+Reduce, Reuse, Recycle: Less waste means less need for production and less pollution.
+Use Less Fossil Fuels: Opt for public transport, carpool, bike, or walk whenever possible. Consider renewable energy sources like solar or wind power.
+Plant Trees: Trees absorb CO2, a major greenhouse gas.
+Educate Others: Sharing what you learn can help others understand the importance of addressing climate change.
+By understanding climate change and taking action, we can help protect our planet for future generations.
+
+Actionable Steps:
+Limit Energy Use: Turn off lights when not in use, use energy-efficient appliances.
+Support Renewable Energy: Advocate for and support policies that promote renewable energy.
+Reduce Meat Consumption: Meat production is a significant source of greenhouse gases; reducing it can lower your carbon footprint.
+Participate in Local Initiatives: Join or support local efforts to combat climate change, like tree-planting drives or community clean-ups.
+Remember, every small action counts! Together, we can make a big difference."""
+
+    response2 = """Climate change is a long-term shift in weather patterns, such as temperature and precipitation. It's a complex issue that can be caused by both natural processes and human activities.
+What is climate?
+Climate is the typical weather that a location experiences over a long period of time. For example, if you live in a place where it's usually hot and sunny, that's your climate.
+
+What is weather?
+Weather is the conditions of the atmosphere at a particular time and place. For example, if it's raining in your town today, that's the weather.
+
+What is climate change?
+Climate change is when these typical weather conditions start to change. This can be caused by natural processes, like volcanic eruptions, or human activities, like burning fossil fuels.
+
+What are the effects of climate change?
+Climate change can have lots of different effects, including:
+
+Rising temperatures
+Changes in rainfall
+More extreme weather events, like floods, hurricanes, and droughts
+Species loss and extinction
+Damage to infrastructure
+Disruptions to services and the economy
+What can we do about climate change?
+The Paris Agreement, adopted in 2015, is a legally binding international treaty on climate change. It aims to limit global warming to well below 2°C, and preferably to a 1.5°C increase, above pre-industrial levels.
+
+There are lots of things we can do to help tackle climate change, like:
+
+Using renewable energy sources, like solar and wind power
+Reducing our use of fossil fuels
+Protecting and restoring natural habitats
+Educating ourselves and others about the issue"""
+
     try:
+        logger.info('--checking hallucination--')
+
         load_environment()
         cohere_api_key = os.getenv('COHERE_API_KEY')
         if not cohere_api_key:
             raise ValueError("Cohere API key not found in environment")
         
-        for i, test_case in enumerate(test_cases):
-            logger.info(f"\nRunning test case {i + 1}")
-            score = await check_hallucination(
-                test_case["question"],
-                test_case["answer"],
-                test_case["context"],
-                cohere_api_key
-            )
-            
-            min_expected, max_expected = test_case["expected_score_range"]
-            if min_expected <= score <= max_expected:
-                logger.info(f"✓ Test case {i + 1} passed: Score {score} within expected range")
-            else:
-                logger.warning(f"✗ Test case {i + 1} failed: Score {score} outside expected range")
-                
+        await check_hallucination(question, response1, context, cohere_api_key)
+        
+        #await check_hallucination(question, response2, context, cohere_api_key)
+
     except Exception as e:
         logger.error(f"Test failed: {str(e)}")
         raise
     
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        # Run tests
-        asyncio.run(test_hallucination_guard())
-    else:
-        # Run normal operation
-        asyncio.run(main())
+    start_time = time.time()
+    asyncio.run(test_hallucination_guard())
+    print('processing time: ',time.time()-start_time)
+    

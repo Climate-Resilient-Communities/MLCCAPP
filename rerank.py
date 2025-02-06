@@ -82,7 +82,7 @@ def rerank_fcn(query: str, docs_to_rerank: List[Dict], top_k: int, cohere_client
             original_doc['score'] = result.relevance_score
             reranked_docs.append(original_doc)
             
-        logger.info(f"Successfully reranked {len(reranked_docs)} documents")
+        #logger.info(f"Successfully reranked {len(reranked_docs)} documents")
         
         return reranked_docs
         

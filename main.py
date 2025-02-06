@@ -278,23 +278,23 @@ class MultilingualClimateChatbot:
                 language_code = self.get_language_code(language_name)
                 cache_key = f"{language_code}:{norm_query}"
                 
-                cached_result = self.redis_client.get_from_cache(cache_key)
+                #cached_result = self.redis_client.get_from_cache(cache_key)
 
                 #if cache_key in self.response_cache:
                 #    logger.info("📚 Found cached response...")
                 #    cached_result = self.response_cache[cache_key]
                 #    logger.info(f"Cache hit for query: {norm_query[:50]}...")
-                if cached_result:
-                    processing_time = time.time() - start_time
-                    return {
-                       "success": True,
-                       "language_code": language_code,
-                       "response": cached_result['response'],
-                       "citations": cached_result['citations'],
-                       "faithfulness_score": cached_result['faithfulness_score'],
-                       "processing_time": processing_time,
-                       "cache_hit": True
-                    }
+               # if cached_result:
+               #     processing_time = time.time() - start_time
+               #     return {
+               #        "success": True,
+               #        "language_code": language_code,
+               #        "response": cached_result['response'],
+               #        "citations": cached_result['citations'],
+               #        "faithfulness_score": cached_result['faithfulness_score'],
+               #        "processing_time": processing_time,
+               #        "cache_hit": True
+               #     }
                 
                 # 3. Language routing
                 logger.info("🌐 Processing language routing...")
@@ -354,7 +354,7 @@ class MultilingualClimateChatbot:
                 try:
                     # Extract contexts with limits
                     logger.info("✔️ Extracting contexts for verification...")
-                    contexts = extract_contexts(citations, reranked_docs, max_contexts=3)
+                    contexts = extract_contexts(reranked_docs, max_contexts=5)
 
                     # Check for hallucinations
                     logger.info("✔️ Performing hallucination check...")
@@ -373,7 +373,7 @@ class MultilingualClimateChatbot:
                     )
                     logger.info(f"✔️ Hallucination check complete - Score: {faithfulness_score}")
                     
-                    if faithfulness_score < 0.6: 
+                    if faithfulness_score < 0.1: 
                         logger.warning("✔️ Low faithfulness score detected, attempting recovery...")
                         
                         # First try: Regenerate with stricter prompt
@@ -400,7 +400,7 @@ class MultilingualClimateChatbot:
                         logger.info(f"✔️ Regenerated response score: {regenerated_score}")
                         
                         # If regeneration didn't help, try Tavily fallback
-                        if regenerated_score < 0.6:
+                        if regenerated_score < 0.1:
                             logger.info("✔️ Attempting Tavily fallback...")
                             fallback_response, fallback_citations, fallback_score = await self._try_tavily_fallback(
                                 query=processed_query,
@@ -467,13 +467,13 @@ class MultilingualClimateChatbot:
                         "cache_hit": True
                     }
                 
-                cache_save_result = self.redis_client.save_to_cache(
-                    cache_key, 
-                    result
-                )
+                #cache_save_result = self.redis_client.save_to_cache(
+                #    cache_key, 
+                #    result
+                #)
                 # Optionally log cache saving result
-                if not cache_save_result:
-                    print(f"Failed to save cache for key: {cache_key}")
+                #if not cache_save_result:
+                #    print(f"Failed to save cache for key: {cache_key}")
 
                 return {
                     "success": True,
@@ -607,7 +607,7 @@ class MultilingualClimateChatbot:
             })
             
             logger.debug(f"Results stored successfully for query: {query[:50]}...")
-            
+            logger.info(f"processing time is {processing_time}.")
         except Exception as e:
             logger.error(f"Error storing results: {str(e)}")
             # Don't raise the error as this is a non-critical operation

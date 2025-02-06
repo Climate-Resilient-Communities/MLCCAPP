@@ -83,7 +83,7 @@ class ClimateCache:
         try:
             # Create a copy to avoid modifying the original result
             cache_result = result.copy()
-        
+            
             # Preprocess the 'citations' field to make it JSON-serializable
             if 'citations' in cache_result:
                 cache_result['citations'] = [
